@@ -46,3 +46,7 @@ build/
 
 *.orig
 *~
+
+Session.vim
+build
+

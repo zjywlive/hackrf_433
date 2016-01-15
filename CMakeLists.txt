@@ -44,14 +44,14 @@ endif()
 # Find build dependencies
 ########################################################################
 find_package(PkgConfig)
-find_package(LibRTLSDR)
+find_package(LIBHACKRF)
 
 ########################################################################
 # Setup the include and linker paths
 ########################################################################
 include_directories(
     ${CMAKE_SOURCE_DIR}/include
-	${LIBRTLSDR_INCLUDE_DIRS}
+	${LIBHACKRF_INCLUDE_DIR}
 )
 
 ########################################################################
