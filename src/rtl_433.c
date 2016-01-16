@@ -21,6 +21,7 @@
  */
 
 #include <stdbool.h>
+#include <sys/time.h>
 
 
 //#include "rtl-sdr.h"
@@ -49,8 +50,16 @@ int debug_output = 0;
 int quiet_mode = 0;
 int overwrite_mode = 0;
 
-
 int num_r_devices = 0;
+
+volatile uint32_t byte_count = 0;
+struct timeval time_start;
+struct timeval t_start;
+
+static float TimevalDiff(const struct timeval *a, const struct timeval *b) {
+	return (a->tv_sec - b->tv_sec) + 1e-6f * (a->tv_usec - b->tv_usec);
+}
+
 
 struct dm_state {
 	FILE *out_file;
@@ -547,6 +556,16 @@ err:
 	return;
 }
 
+/*
+typedef struct {
+        hackrf_device* device;
+        uint8_t* buffer;
+        int buffer_length;
+        int valid_length;
+        void* rx_ctx;
+        void* tx_ctx;
+} hackrf_transfer;
+*/
 
 //static void rtlsdr_callback(unsigned char *iq_buf, uint32_t len, void *ctx) {
 int rtlsdr_callback(hackrf_transfer *transfer) {
@@ -554,6 +573,8 @@ int rtlsdr_callback(hackrf_transfer *transfer) {
 	struct dm_state *demod = transfer->rx_ctx;
 	int i;
 	uint32_t len = transfer->valid_length;
+
+	byte_count += transfer->valid_length;
 
 	if (do_exit || do_exit_async)
 		return 0;
@@ -998,14 +1019,14 @@ int main(int argc, char **argv) {
 		*/
 
 		// RX VGA (baseband) gain, 0-62dB, 2dB steps
-		if((r = hackrf_set_vga_gain(dev, 10)) != HACKRF_SUCCESS) {
+		if((r = hackrf_set_vga_gain(dev, 24)) != HACKRF_SUCCESS) {
 			fprintf(stderr, "WARNING: hackrf_set_vga_gain.\n");
 		} else {
 			printf(">> hackrf_set_vga_gain\n");
 		}
 
 		// RX LNA (IF) gain, 0-40dB, 8dB steps
-		if((r = hackrf_set_lna_gain(dev, 8)) != HACKRF_SUCCESS) {
+		if((r = hackrf_set_lna_gain(dev, 32)) != HACKRF_SUCCESS) {
 			fprintf(stderr, "WARNING: hackrf_set_lna_gain.\n");
 		} else {
 			printf(">> hackrf_set_lna_gain\n");
@@ -1093,12 +1114,10 @@ int main(int argc, char **argv) {
 	*/
 
 	/* Reset endpoint before we start reading from it (mandatory) */
-	/*
-	r = rtlsdr_reset_buffer(dev);
-	if (r < 0)
-		fprintf(stderr, "WARNING: Failed to reset buffers.\n");
+	//r = rtlsdr_reset_buffer(dev);
+	//r = hackrf_buffer_reset();
+	//if (r < 0) fprintf(stderr, "WARNING: Failed to reset buffers.\n");
 
-	*/
 
 	// FIXME !!!!
 	sync_mode=0;
@@ -1143,20 +1162,54 @@ int main(int argc, char **argv) {
 		if (!quiet_mode) {
 			fprintf(stderr, "Reading samples in async mode...\n");
 		}
-		while (!do_exit) {
+
+		r = hackrf_set_freq(dev, frequency[0]);
+		if (r != HACKRF_SUCCESS)
+			fprintf(stderr, "WARNING: Failed to set center freq.\n");
+
+		// GO GO GO
+		if((r = hackrf_start_rx(dev, rtlsdr_callback, (void *) demod)) != HACKRF_SUCCESS) {
+			fprintf(stderr, "hackrf_start_rx failed: %s (%d)\n",
+					hackrf_error_name(r), r);
+			return EXIT_FAILURE;
+		}
+		do_exit_async = 0;
+		gettimeofday(&t_start, NULL);
+	        gettimeofday(&time_start, NULL);
+
+		while ((hackrf_is_streaming(dev) == HACKRF_TRUE) && !do_exit) {
 			/* Set the frequency */
 			//r = rtlsdr_set_center_freq(dev, frequency[frequency_current]);
-			r = hackrf_set_freq(dev, frequency[frequency_current]);
-			if (r != HACKRF_SUCCESS)
-				fprintf(stderr, "WARNING: Failed to set center freq.\n");
+			//r = hackrf_set_freq(dev, frequency[frequency_current]);
+			//if (r != HACKRF_SUCCESS)
+			//	fprintf(stderr, "WARNING: Failed to set center freq.\n");
 			//else
 				//fprintf(stderr, "Tuned to %u Hz.\n", rtlsdr_get_center_freq(dev));
 			
 			//r = rtlsdr_read_async(dev, rtlsdr_callback, (void *) demod, DEFAULT_ASYNC_BUF_NUMBER, out_block_size);
-			hackrf_start_rx(dev, rtlsdr_callback, (void *) demod);
-			do_exit_async = 0;
-			frequency_current++;
-			if (frequency_current > frequencies - 1) frequency_current = 0;
+			//hackrf_start_rx(dev, rtlsdr_callback, (void *) demod);
+			//do_exit_async = 0;
+			//frequency_current++;
+			//if (frequency_current > frequencies - 1) frequency_current = 0;
+			uint32_t byte_count_now;
+			struct timeval time_now;
+			float time_difference, rate;
+			sleep(1);
+			gettimeofday(&time_now, NULL);
+			byte_count_now = byte_count;
+			byte_count = 0;
+
+			time_difference = TimevalDiff(&time_now, &time_start);
+			rate = (float)byte_count_now / time_difference;
+			printf("%4.1f MiB / %5.3f sec = %4.1f MiB/second\n", (byte_count_now / 1e6f), time_difference, (rate / 1e6f) );
+
+			time_start = time_now;
+
+			if (byte_count_now == 0) {
+				printf("\nCouldn't transfer any bytes for one second.\n");
+				break;
+			}
+
 		}
 	}
 
