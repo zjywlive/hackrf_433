@@ -33,6 +33,8 @@
 
 #include <hackrf.h>
 
+#define FREQ_ONE_MHZ (1000000ull)
+
 static int do_exit = 0;
 static int do_exit_async = 0, frequencies = 0, events = 0;
 uint32_t frequency[MAX_PROTOCOLS];
@@ -52,9 +54,11 @@ int overwrite_mode = 0;
 
 int num_r_devices = 0;
 
+volatile uint32_t call_count = 0;
 volatile uint32_t byte_count = 0;
 struct timeval time_start;
 struct timeval t_start;
+uint32_t baseband_filter_bw_hz = 0;
 
 static float TimevalDiff(const struct timeval *a, const struct timeval *b) {
 	return (a->tv_sec - b->tv_sec) + 1e-6f * (a->tv_usec - b->tv_usec);
@@ -573,8 +577,7 @@ int rtlsdr_callback(hackrf_transfer *transfer) {
 	struct dm_state *demod = transfer->rx_ctx;
 	int i;
 	uint32_t len = transfer->valid_length;
-
-	byte_count += transfer->valid_length;
+	//printf("-----------> %u vs %u\n", transfer->valid_length, transfer->buffer_length);
 
 	if (do_exit || do_exit_async)
 		return 0;
@@ -717,6 +720,8 @@ int rtlsdr_callback(hackrf_transfer *transfer) {
 			hackrf_stop_rx(dev);
 		}
 	}
+	byte_count += transfer->valid_length;
+	call_count++;
 	return 0;
 }
 
@@ -991,7 +996,16 @@ int main(int argc, char **argv) {
 			fprintf(stderr, "WARNING: Failed to set sample rate.\n");
 		else
 			//fprintf(stderr, "Sample rate set to %d.\n", rtlsdr_get_sample_rate(dev)); // Unfortunately, doesn't return real rate
-			fprintf(stderr, "Sample rate set to %d.\n", samp_rate);
+			fprintf(stderr, "Sample rate set to %u Hz/%.03f MHz.\n", samp_rate, ((float)samp_rate/(float)FREQ_ONE_MHZ));
+		
+		baseband_filter_bw_hz = hackrf_compute_baseband_filter_bw_round_down_lt(samp_rate);
+
+		r = hackrf_set_baseband_filter_bandwidth(dev, baseband_filter_bw_hz);
+		if (r != HACKRF_SUCCESS)
+			printf("hackrf_baseband_filter_bandwidth_set() failed: %s (%d)\n", hackrf_error_name(r), r);
+		else
+			fprintf(stderr, "Baseband filter bandwidth set to %u Hz/%.03f MHz\n", baseband_filter_bw_hz, (float)((float)baseband_filter_bw_hz/(float)FREQ_ONE_MHZ));
+
 
 		fprintf(stderr, "Bit detection level set to %d.\n", demod->level_limit);
 
@@ -1019,17 +1033,23 @@ int main(int argc, char **argv) {
 		*/
 
 		// RX VGA (baseband) gain, 0-62dB, 2dB steps
-		if((r = hackrf_set_vga_gain(dev, 24)) != HACKRF_SUCCESS) {
+		if((r = hackrf_set_vga_gain(dev, 2)) != HACKRF_SUCCESS) {
 			fprintf(stderr, "WARNING: hackrf_set_vga_gain.\n");
 		} else {
 			printf(">> hackrf_set_vga_gain\n");
 		}
 
 		// RX LNA (IF) gain, 0-40dB, 8dB steps
-		if((r = hackrf_set_lna_gain(dev, 32)) != HACKRF_SUCCESS) {
+		if((r = hackrf_set_lna_gain(dev, 40)) != HACKRF_SUCCESS) {
 			fprintf(stderr, "WARNING: hackrf_set_lna_gain.\n");
 		} else {
 			printf(">> hackrf_set_lna_gain\n");
+		}
+
+		if((r = hackrf_set_amp_enable(dev, (uint8_t)1)) != HACKRF_SUCCESS) {
+			fprintf(stderr, "WARNING: hackrf_set_amp_enable.\n");
+		} else {
+			printf(">> hackrf_set_amp_enable\n");
 		}
 
 		//r = rtlsdr_set_freq_correction(dev, ppm_error);
@@ -1192,16 +1212,20 @@ int main(int argc, char **argv) {
 			//frequency_current++;
 			//if (frequency_current > frequencies - 1) frequency_current = 0;
 			uint32_t byte_count_now;
+			uint32_t call_count_now;
 			struct timeval time_now;
 			float time_difference, rate;
 			sleep(1);
 			gettimeofday(&time_now, NULL);
 			byte_count_now = byte_count;
+			call_count_now = call_count;
 			byte_count = 0;
+			call_count = 0;
 
 			time_difference = TimevalDiff(&time_now, &time_start);
 			rate = (float)byte_count_now / time_difference;
 			printf("%4.1f MiB / %5.3f sec = %4.1f MiB/second\n", (byte_count_now / 1e6f), time_difference, (rate / 1e6f) );
+//			printf("Callback count : %u / %5.3f sec -> %u\n", call_count_now, time_difference, byte_count_now/call_count_now );
 
 			time_start = time_now;
 
